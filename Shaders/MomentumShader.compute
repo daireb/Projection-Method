@@ -1,0 +1,74 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+StructuredBuffer<float> u;
+StructuredBuffer<float> v;
+RWStructuredBuffer<float> uNew;
+RWStructuredBuffer<float> vNew;
+
+StructuredBuffer<int> domain;
+StructuredBuffer<float> p;
+
+uint domainWidth;
+uint domainHeight;
+
+float h;
+float dt;
+float mu;
+
+float get(StructuredBuffer<float> buffer, uint i, uint j) {
+    if (i < 0 || i >= domainWidth || j < 0 || j >= domainHeight) {
+        return 0;
+    }
+
+    return buffer[i + j*domainWidth];
+}
+
+int get(StructuredBuffer<int> buffer, uint i, uint j) { 
+    if (i < 0 || i >= domainWidth || j < 0 || j >= domainHeight) {
+        return 0;
+    }
+    
+    return buffer[i + j*domainWidth];
+}
+
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    uint j = id.y;
+
+    if (get(domain,i,j) == 0 || i > domainWidth || j > domainHeight) {
+        return;
+    }
+
+    // U velocity field calculations
+    if (get(domain,i-1,j) != 0) {
+        float uConvection =
+            get(u, i, j) * (get(u, i+1, j) - get(u, i-1, j)) / (2 * h) +
+            (get(v, i, j) + get(v, i, j+1) + get(v, i-1, j) + get(v, i-1, j+1)) / 4 * (get(u, i, j+1) - get(u, i, j-1)) / (2 * h);
+
+        float uDiffusion = mu * (
+            (get(u, i+1, j) - 2 * get(u, i, j) + get(u, i-1, j)) / (h * h)
+            + (get(u, i, j+1) - 2 * get(u, i, j) + get(u, i, j-1)) / (h * h));
+
+        float uPressure = (get(p, i, j) - get(p,i-1,j)) / h;
+
+        uNew[i + j * domainWidth] = get(u, i, j) - dt * (uConvection + uPressure - uDiffusion);
+    }
+
+    // V velocity field calculations
+    if (get(domain,i,j-1) != 0) {
+        float vConvection =
+            (get(u, i, j) + get(u, i+1, j) + get(u, i, j-1) + get(u, i+1, j-1)) / 4 * (get(v, i+1, j) - get(v, i-1, j)) / (2 * h) +
+            get(v, i, j) * (get(v, i, j+1) - get(v, i, j-1)) / (2 * h);
+
+        float vDiffusion = mu * (
+            (get(v, i+1, j) - 2 * get(v, i, j) + get(v, i-1, j)) / (h * h)
+            + (get(v, i, j+1) - 2 * get(v, i, j) + get(v, i, j-1)) / (h * h));
+
+        float vPressure = (get(p, i, j) - get(p,i,j-1)) / h;
+            
+        vNew[i + j * domainWidth] = get(v, i, j) - dt * (vConvection + vPressure - vDiffusion);
+    }
+}

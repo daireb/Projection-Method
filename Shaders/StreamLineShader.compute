@@ -1,0 +1,90 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+StructuredBuffer<float> u;
+StructuredBuffer<float> v;
+
+RWTexture2D<float4> targetTexture;
+
+uint numLines;
+
+uint domainWidth;
+uint domainHeight;
+
+float2 pollVelocity(float2 pos) {
+    int x0 = floor(pos.x);
+    int x1 = x0+1;
+    
+    int y0 = floor(pos.y);
+    int y1 = y0+1;
+
+    float x_a = pos.x-x0;
+    float y_a = pos.y-y0;
+
+    return float2(
+        u[x0 + domainWidth*y0] * x_a + u[x1 + domainWidth*y0] * (1-x_a),
+        v[x0 + domainWidth*y0] * y_a + v[x0 + domainWidth*y1] * (1-y_a)
+    );
+}
+
+void DrawBresenhamLine(int2 start, int2 end, float4 color) {
+    float opacity = 0.2;
+
+    int dx = abs(end.x - start.x), sx = start.x < end.x ? 1 : -1;
+    int dy = -abs(end.y - start.y), sy = start.y < end.y ? 1 : -1; 
+    int err = dx + dy, e2; // error value e_xy
+
+    int2 pos = start;
+    
+    while (true) {
+        float4 oldColor = targetTexture[pos];
+        targetTexture[pos] = color*opacity + oldColor*(1-opacity); 
+        if (pos.x == end.x && pos.y == end.y) break;
+
+        e2 = 2 * err;
+        if (e2 >= dy) { // e_xy+e_x > 0
+            err += dy;
+            pos.x += sx;
+        }
+        if (e2 <= dx) { // e_xy+e_y < 0
+            err += dx;
+            pos.y += sy;
+        }
+    }
+}
+
+int2 roundVector(float2 val) {
+    return int2(round(val.x), round(val.y));
+}
+
+// Draws a streamline
+[numthreads(16,1,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x > numLines) return;
+
+    float step_size = 0.5;
+
+    float2 currentPos = float2(2, (float)id.x/numLines * domainWidth);
+
+    for (int i = 0; i < 10000; i++) {
+        float2 velocity = pollVelocity(currentPos);
+        if (length(velocity) < 1) {
+            break;
+        }
+        
+        float2 newPos = currentPos + velocity*step_size;
+        if (newPos.x > domainWidth-1 || newPos.y > domainHeight-1 || newPos.x < 0 || newPos.y < 0) {
+            break;
+        }
+        
+        int2 a = roundVector(currentPos);
+        int2 b = roundVector(newPos);
+
+        DrawBresenhamLine(a,b,float4(0,0,0,1));
+
+        currentPos = newPos;
+    }
+
+    return;
+}

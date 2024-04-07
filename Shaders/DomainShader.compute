@@ -1,0 +1,68 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+RWStructuredBuffer<float> u;
+RWStructuredBuffer<float> v;
+
+RWStructuredBuffer<int> domain;
+
+uint domainWidth;
+uint domainHeight;
+
+float2 dragStart;
+float2 dragEnd;
+int domainSet;
+
+float dragRadius;
+
+int get(RWStructuredBuffer<int> buffer, uint i, uint j) { 
+    if (i < 0 || i >= domainWidth || j < 0 || j >= domainHeight) {
+        return 0;
+    }
+    
+    return buffer[i + j*domainWidth];
+}
+
+float distToLine(float2 lineStart, float2 lineEnd, float2 p) {
+    if (all(lineStart == lineEnd)) {
+        return length(p-lineStart);
+    }
+
+    float2 lineOffset = lineEnd - lineStart;
+    float2 lineDirection = normalize(lineOffset);
+
+    float projectionLength = dot(lineDirection, p - lineStart);
+
+    if (projectionLength < 0) {
+        return length(p - lineStart);
+    } else if (projectionLength > length(lineOffset)) {
+        return length(p - lineEnd);
+    } else {
+        float2 projectedPoint = lineStart + lineDirection * projectionLength;
+        return length(p - projectedPoint);
+    }
+}
+
+[numthreads(8,8,1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    uint j = id.y;
+
+    if (i == 0 || j == 0 || i > domainWidth || j > domainHeight) {
+        return;
+    }
+
+    float dist = distToLine(dragStart,dragEnd,float2(i+.5,j+.5));
+
+    if (domainSet == 0 && dist < dragRadius + 10) {
+        u[i + j*domainWidth] = 0;
+        u[(i+1) + j*domainWidth] = 0;
+        v[i + j*domainWidth] = 0;
+        v[i + (j+1)*domainWidth] = 0; 
+    }
+
+    if (dist < dragRadius) {
+        domain[i + j*domainWidth] = domainSet;
+    }
+}

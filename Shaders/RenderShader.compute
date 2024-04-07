@@ -1,0 +1,158 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+StructuredBuffer<float> u;
+StructuredBuffer<float> v;
+StructuredBuffer<int> domain;
+StructuredBuffer<float> pressure;
+
+RWTexture2D<float4> textureOut;
+
+float baseSpeed;
+float gradientTightness;
+float gradientRangeMult;
+
+uint domainWidth;
+uint domainHeight;
+
+uint renderMode;
+
+float signedpow(float b, float p) {
+    return pow(abs(b),p) * sign(b);
+}
+
+float4 computeSciColor(float val) {
+    float m = 0.2;
+    int num = floor(val / m);
+    float s = (val - num * m) / m;
+
+    float r = 0.0, g = 0.0, b = 0.0;
+    switch (num) {
+        case 0:
+            r = 1 - s; g = 1 - s*0.85; b = 1;
+            break;
+        case 1:
+            r = 0.0; g = s * 0.85 + 0.15; b = 1.0;
+            break;
+        case 2:
+            r = 0.0; g = 1.0; b = 1.0 - s;
+            break;
+        case 3:
+            r = s; g = 1.0; b = 0.0;
+            break;
+        case 4:
+            r = 1.0; g = 1.0 - s; b = 0.0;
+            break;
+        default:
+            r = g = b = 0.0;
+            break;
+    }
+
+    return float4(r, g, b, 1.0);
+}
+
+float4 GetSciColor(float val, float minVal, float maxVal) {
+    float range = maxVal - minVal;
+    val = (val - minVal) / range;
+
+    val = clamp(val, -0.9999, 0.9999);
+    val = signedpow(val,gradientTightness);
+
+    if (val < 0) {
+        //return float4(1,1,1,0) - computeSciColor(-val);
+        float v = 1 + val*.75;
+        return float4(v,v,v,1);
+    }
+
+    return computeSciColor(val);
+}
+
+float get(StructuredBuffer<float> buffer, uint i, uint j) {
+    uint index = i + j*domainWidth;
+
+    if (index > domainWidth*domainHeight)
+        return 0;
+    else
+        return buffer[index];
+}
+
+int get(StructuredBuffer<int> buffer, uint i, uint j) {
+    uint index = i + j*domainWidth;
+
+    if (index > domainWidth*domainHeight)
+        return 0;
+    else
+        return buffer[index];
+}
+
+float getNeumann(StructuredBuffer<float> buffer, uint i, uint j, uint offset_i, uint offset_j) {
+    if (i > domainWidth || j > domainHeight || get(domain,i,j) == 0) {
+        return 0;
+    } else {
+        uint new_i = i + offset_i;
+        uint new_j = j + offset_j;
+
+        if (get(domain,i,j) == 0) {
+            uint index = i + domainWidth * j;
+            return buffer[index];
+        }
+
+        uint index = new_i + domainWidth * new_j;
+        return buffer[index];
+    }
+}
+
+float slog(float val) {
+    if (val > 0) {
+        return log(val+1);
+    } else {
+        return -log(-val+1);
+    }
+}
+
+float4 applyShadows(int i, int j, float3 colour) { // Applies shadows based on pressure field
+    float dx = 0.005;
+    float dy = 0.005;
+
+    float pressureLeft =    slog(getNeumann(pressure, i, j, -1,  0));
+    float pressureRight =   slog(getNeumann(pressure, i, j,  1,  0));
+    float pressureDown =    slog(getNeumann(pressure, i, j,  0, -1));
+    float pressureUp =      slog(getNeumann(pressure, i, j,  0,  1));
+
+    // Surface Normal
+    float2 gradient = float2(pressureRight - pressureLeft, pressureUp - pressureDown);
+    float3 normal = normalize(float3(gradient.xy, 1.0));
+
+    // Simple lighting model
+    float3 lightDir = normalize(float3(0.5, 0.5, 1));
+    float lightIntensity = max(dot(normal, lightDir), 0.1) + .1;
+    colour *= lightIntensity;
+
+    return float4(colour, 1.0);
+}
+
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    if (get(domain,id.x,id.y) == 0) { 
+        textureOut[id.xy] = float4(0, 0, 0, 1.0);
+        return;
+    }
+
+    float uValue = (get(u,id.x,id.y) + get(u,id.x+1,id.y))/2;
+    float vValue = (get(v,id.x,id.y) + get(v,id.x,id.y+1))/2;
+    float pValue = get(pressure,id.x,id.y);
+
+    if (renderMode == 0) {
+        textureOut[id.xy] = float4(uValue/20/gradientRangeMult + .5, 0, vValue/20/gradientRangeMult + .5, 1.0);
+    } else if (renderMode == 1) {
+        float speed = length(float2(uValue,vValue)) - baseSpeed;
+        textureOut[id.xy] = GetSciColor(speed,0,20*gradientRangeMult);
+    } else if (renderMode == 2) {
+        textureOut[id.xy] = GetSciColor(slog(pValue),0,5*gradientRangeMult);
+    } else if (renderMode == 3) {
+        float speed = length(float2(uValue,vValue));
+        float3 color = (float3)GetSciColor(speed,0,20*gradientRangeMult);
+        textureOut[id.xy] = applyShadows(id.x, id.y, color);
+    }
+}

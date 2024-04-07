@@ -1,0 +1,110 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+StructuredBuffer<float> u;
+StructuredBuffer<float> v;
+RWStructuredBuffer<float> uNew;
+RWStructuredBuffer<float> vNew;
+
+StructuredBuffer<int> domain;
+RWStructuredBuffer<float> pressure;
+
+float relaxationFactor;
+
+float dt;
+float h;
+
+uint domainWidth;
+uint domainHeight;
+
+float get(StructuredBuffer<float> buffer, uint i, uint j) {
+    if (i < 0 || i >= domainWidth || j < 0 || j >= domainHeight) {
+        return 0;
+    }
+
+    return buffer[i + j*domainWidth];
+}
+
+int get(StructuredBuffer<int> buffer, uint i, uint j) { 
+    if (i < 0 || i >= domainWidth || j < 0 || j >= domainHeight) {
+        return 0;
+    }
+    
+    return buffer[i + j*domainWidth];
+}
+
+struct IncompressibilityResult {
+    int flowDirections;
+    float divergence;
+
+    int de;
+    int dw;
+    int dn;
+    int ds;
+};
+
+IncompressibilityResult computeIncompressibility(uint i, uint j) {
+    IncompressibilityResult result;
+
+    result.de = get(domain,i+1,j);
+    result.dw = get(domain,i-1,j);
+    result.dn = get(domain,i,j+1);
+    result.ds = get(domain,i,j-1);
+
+    result.flowDirections = result.de + result.dw + result.dn + result.ds;
+
+    result.divergence = (
+        get(u,i+1,j) - get(u,i,j) +
+        get(v,i,j+1) - get(v,i,j)
+    ) / 2;
+
+    return result;
+}
+
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    uint j = id.y;
+
+    if (get(domain,i,j) == 0 || i > domainWidth || j > domainHeight) {
+        return;
+    }
+
+    IncompressibilityResult myResult = computeIncompressibility(i,j);
+
+    // Correcting u
+    if (get(domain,i-1,j) != 0) {
+        IncompressibilityResult westResult = computeIncompressibility(i-1,j);
+        float uCorrection = 
+            myResult.dw * myResult.divergence / myResult.flowDirections
+            - westResult.de * westResult.divergence / westResult.flowDirections;
+        uNew[i + j * domainWidth] = clamp(get(u,i,j) + uCorrection * relaxationFactor, -50, 50);
+    }
+    
+    // Correcting v
+    if (get(domain,i,j-1)) {
+        IncompressibilityResult southResult = computeIncompressibility(i,j-1);
+        float vCorrection = 
+            myResult.ds * myResult.divergence / myResult.flowDirections
+            - southResult.dn * southResult.divergence / southResult.flowDirections;
+        vNew[i + j * domainWidth] = clamp(get(v,i,j) + vCorrection * relaxationFactor, -50, 50);
+    }
+
+    // Tracking pressure
+    pressure[i + j * domainWidth] += -myResult.divergence / myResult.flowDirections * relaxationFactor * h / dt;
+}
+
+#pragma kernel DampPressure
+
+float pressureDamping;
+
+[numthreads(8,8,1)]
+void DampPressure(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    uint j = id.y; 
+
+    // Damping the pressure
+    pressure[i + j * domainWidth] *= pressureDamping;
+}
